@@ -227,3 +227,5 @@ backend/.venv/
 .env
 .env.*
 !.env.example
+# Keep the official dataset local
+backend/data/
