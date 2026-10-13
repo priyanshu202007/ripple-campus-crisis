@@ -218,3 +218,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# Datathon project exclusions
+backend/venv/
+backend/.venv/
+.vscode/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
