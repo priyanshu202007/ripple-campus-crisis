@@ -67,6 +67,71 @@ def _resource_response(resource: str, primary_file: str, related_files: dict[str
         raise _dataset_error(500, "INTERNAL_DATA_ERROR", f"Unexpected failure while preparing the {resource} resource.") from exc
 
 
+def _validate_schedule_payload(value: Any, schedule_name: str) -> None:
+    """Reject malformed nested structures before the feasibility validator reads them."""
+    if value is None:  # Existing behavior: null is equivalent to an omitted schedule.
+        return
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=422, detail={
+            "code": "INVALID_SCHEDULE_PAYLOAD",
+            "message": f"{schedule_name} must be a JSON object or null.",
+            "field": schedule_name,
+            "expected": "object",
+        })
+
+    collections = (
+        ("scheduled_jobs", "unscheduled_jobs", "service_restorations")
+        if schedule_name == "repair_schedule" else
+        ("scheduled_activities", "deferred_activities", "cancelled_activities", "unscheduled_activities")
+    )
+    for key in collections:
+        if key not in value:
+            continue  # Keep partial/legacy schedule objects compatible.
+        records = value[key]
+        field_path = f"{schedule_name}.{key}"
+        if not isinstance(records, list):
+            raise HTTPException(status_code=422, detail={
+                "code": "INVALID_SCHEDULE_PAYLOAD",
+                "message": f"{field_path} must be an array of objects.",
+                "field": field_path,
+                "expected": "array",
+            })
+        for index, record in enumerate(records):
+            record_path = f"{field_path}[{index}]"
+            if not isinstance(record, dict):
+                raise HTTPException(status_code=422, detail={
+                    "code": "INVALID_SCHEDULE_PAYLOAD",
+                    "message": f"{record_path} must be an object.",
+                    "field": record_path,
+                    "expected": "object",
+                })
+            nested_fields = {"scheduled_jobs": ("restored_services",), "scheduled_activities": ("room_occupancy", "assigned_staff")}.get(key, ())
+            for nested in nested_fields:
+                if nested not in record:
+                    continue
+                nested_value = record[nested]
+                expected_type = list if nested == "assigned_staff" or nested == "restored_services" else dict
+                if not isinstance(nested_value, expected_type):
+                    expected = "array" if expected_type is list else "object"
+                    nested_path = f"{record_path}.{nested}"
+                    raise HTTPException(status_code=422, detail={
+                        "code": "INVALID_SCHEDULE_PAYLOAD",
+                        "message": f"{nested_path} must be a JSON {expected}.",
+                        "field": nested_path,
+                        "expected": expected,
+                    })
+                if expected_type is list:
+                    for nested_index, nested_record in enumerate(nested_value):
+                        if not isinstance(nested_record, dict):
+                            nested_path = f"{record_path}.{nested}[{nested_index}]"
+                            raise HTTPException(status_code=422, detail={
+                                "code": "INVALID_SCHEDULE_PAYLOAD",
+                                "message": f"{nested_path} must be an object.",
+                                "field": nested_path,
+                                "expected": "object",
+                            })
+
+
 @app.get("/")
 def home():
     return {
@@ -121,7 +186,16 @@ def activity_schedule():
 @app.post("/api/validate")
 def validate(body: dict | None = Body(default=None)):
     """Validate supplied schedule payloads or freshly generated schedules."""
+    if body is not None and not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail={
+            "code": "INVALID_SCHEDULE_PAYLOAD",
+            "message": "Request body must be a JSON object or null.",
+            "field": "body",
+            "expected": "object",
+        })
     body = body or {}
+    _validate_schedule_payload(body.get("repair_schedule"), "repair_schedule")
+    _validate_schedule_payload(body.get("activity_schedule"), "activity_schedule")
     return validate_schedules(
         load_dataset(),
         repair_schedule=body.get("repair_schedule"),
